@@ -1,0 +1,3 @@
+scipy
+numpy
+panda3d

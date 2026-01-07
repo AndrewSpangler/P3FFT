@@ -69,13 +69,11 @@ void main() {
     uint elem_in_stage = gid % stage;
     uint base_idx = group_id * elements_per_group + elem_in_stage;
     
-    // Load 16 elements
     vec2 temp[16];
     for (uint k = 0; k < 16; k++) {
         temp[k] = data_in[base_idx + k * stage];
     }
     
-    // Compute 16-point DFT using twiddle factors
     vec2 result[16];
     for (uint k = 0; k < 16; k++) {
         result[k] = vec2(0.0, 0.0);
@@ -88,7 +86,6 @@ void main() {
         }
     }
     
-    // Write back
     for (uint k = 0; k < 16; k++) {
         data_out[base_idx + k * stage] = result[k];
     }
@@ -119,30 +116,25 @@ class Radix16FFT:
         return node
 
     def push(self, data):
-        """Upload complex data to GPU as vec2."""
         data = np.ascontiguousarray(data, dtype=np.complex64)
         sbuf = ShaderBuffer("Data", data.tobytes(), GeomEnums.UH_stream)
         return CastBuffer(sbuf, len(data), cast=np.complex64)
 
     def fetch(self, gpu_handle):
-        """Download buffer back to NumPy."""
         gsg = self.app.win.get_gsg()
         raw = self.app.graphics_engine.extract_shader_buffer_data(gpu_handle.buffer, gsg)
         return np.frombuffer(raw, dtype=gpu_handle.cast)
 
     def fft(self, data, inverse=False):
-        """Radix-16 Cooley-Tukey GPU implementation."""
         buf = data if isinstance(data, CastBuffer) else self.push(data)
         n = buf.n_items
-        
-        # Ensure n is a power of 16
+
         log16n = int(math.log(n) / math.log(16))
         if 16 ** log16n != n:
             raise ValueError(f"Size must be power of 16, got {n}")
         
         inv_flag = -1 if inverse else 1
 
-        # Digit-Reversal Pass (base 16)
         dr_out = ShaderBuffer("DR_Out", n * 8, GeomEnums.UH_stream)
         self.dr_node.set_shader_input("DA", buf.buffer)
         self.dr_node.set_shader_input("DR", dr_out)
@@ -155,7 +147,6 @@ class Radix16FFT:
         
         current_in_buf = dr_out
 
-        # Radix-16 Butterfly Stages
         for s in range(log16n):
             stage_size = 16 ** s
             out_sbuf = ShaderBuffer(f"Stage_{s}", n * 8, GeomEnums.UH_stream)
@@ -196,18 +187,18 @@ class FFT16Demo(ShowBase):
         x = x + 0.2 * np.random.randn(N)
         x = x.astype(np.complex64)
 
-        # GPU FFT
+        # GPU
         t0 = time.perf_counter()
         g_res_handle = self.hmath.fft(x)
         final_gpu = self.hmath.fetch(g_res_handle)
         t_gpu = time.perf_counter() - t0
 
-        # CPU FFT (reference)
+        # CPU (reference)
         t1 = time.perf_counter()
         final_cpu = np.fft.fft(x)
         t_cpu = time.perf_counter() - t1
 
-        # Display results
+        # Results
         print("\n" + "="*90)
         print(f"{'Index':<8} | {'GPU Value':<30} | {'CPU Value':<30} | {'Abs Diff':<12}")
         print("-" * 90)
@@ -228,7 +219,7 @@ class FFT16Demo(ShowBase):
         print(f"Mean Diff: {mean_diff:.3e}")
         print(f"Valid:     {max_diff < 1e-1}")
         
-        # Test inverse FFT
+        # Inverse FFT
         print("\nTesting Inverse FFT...")
         t2 = time.perf_counter()
         final_inv = self.hmath.fft(g_res_handle, inverse=True)
@@ -240,7 +231,7 @@ class FFT16Demo(ShowBase):
         print(f"IFFT Valid:    {inv_diff < 1e-1}")
 
 if __name__ == "__main__":
-    # Test with different sizes (all powers of 16)
+    # Test with different sizes
     sizes = [16**2, 16**3, 16**4, 16**5]  # 256, 4096, 65536
     
     for size in sizes:

@@ -1,14 +1,17 @@
-from direct.showbase.ShowBase import ShowBase
+import numpy as np
 from panda3d.core import (
     GeomVertexFormat, GeomVertexData, GeomVertexWriter,
-    Geom, GeomTriangles, GeomNode, NodePath, Shader,
-    GeomEnums, TransparencyAttrib, ShaderBuffer,
-    CardMaker, Vec4, Vec3, Vec2, LineSegs
+    Geom, GeomEnums, GeomTriangles, GeomNode, NodePath,
+    Shader, TransparencyAttrib, ShaderBuffer,
+    CardMaker, Vec4, Vec3, Vec2
 )
-import numpy as np
-import math
 
 class Graph:
+    """
+    Multi-mode graphing class
+    Handles both linear and circular graphs
+    Can be stacked for use as a visualizer
+    """
     def __init__(
         self,
         parent,
@@ -20,8 +23,8 @@ class Graph:
         position: Vec2 = Vec2(0, 0),
         size: Vec2 = Vec2(0.5, 0.25),
         thickness: float = 2.0,
-        tics_enabled: bool = False,
-        tic_config: dict = None
+        circular: bool = False,
+        base_radius: float = 0.3
     ):
         self.parent = parent
         self.min_val = min_val
@@ -32,37 +35,42 @@ class Graph:
         self.thickness = thickness
         self.size = size
         self.position = position
-        self.tics = None
+        self.circular = circular
+        self.base_radius = base_radius
+        self.initial_base_radius = base_radius  # Store initial radius
         self.ssbo = None
         
-        self._data = np.full(max_values, min_val, dtype=np.float32)
-        self._data_index = 0
-        self._data_count = 0
-        
-        self._max_segments = max_values - 1
-        self._segment_data = np.zeros(self._max_segments * 4, dtype=np.float32)
+        self._values = np.full(max_values, min_val, dtype=np.float32)
+        self._num_segments = max_values - 1
 
         self._create_background()
         self._setup_instanced_geometry()
 
-        if tics_enabled:
-            # Placeholder for your GraphTics logic
-            pass
-
-        for i in range(2):
-            self.put(0)
+        # Initialize with zeros
+        self.set_values(np.zeros(max_values, dtype=np.float32))
 
     def _create_background(self):
-        cm = CardMaker('graph_bg')
-        cm.setFrame(-0.5, 0.5, -0.5, 0.5)
-        self.bg_node = NodePath(cm.generate())
-        self.bg_node.reparentTo(self.parent)
-        # Position using XZ plane (Panda3D 2D standard)
-        self.bg_node.setPos(self.position.x, 0, self.position.y)
-        self.bg_node.setScale(self.size.x, 1, self.size.y)
-        self.bg_node.setColor(self.bg_color)
-        self.bg_node.setTransparency(TransparencyAttrib.MAlpha)
-        self.bg_node.setBin('fixed', -10)
+        if self.circular:
+            cm = CardMaker('graph_bg')
+            cm.setFrame(-0.5, 0.5, -0.5, 0.5)
+            self.bg_node = NodePath(cm.generate())
+            self.bg_node.reparentTo(self.parent)
+            self.bg_node.setPos(self.position.x, 0, self.position.y)
+            scale = max(self.size.x, self.size.y)
+            self.bg_node.setScale(scale, 1, scale)
+            self.bg_node.setColor(self.bg_color)
+            self.bg_node.setTransparency(TransparencyAttrib.MAlpha)
+            self.bg_node.setBin('fixed', -10)
+        else:
+            cm = CardMaker('graph_bg')
+            cm.setFrame(-0.5, 0.5, -0.5, 0.5)
+            self.bg_node = NodePath(cm.generate())
+            self.bg_node.reparentTo(self.parent)
+            self.bg_node.setPos(self.position.x, 0, self.position.y)
+            self.bg_node.setScale(self.size.x, 1, self.size.y)
+            self.bg_node.setColor(self.bg_color)
+            self.bg_node.setTransparency(TransparencyAttrib.MAlpha)
+            self.bg_node.setBin('fixed', -10)
 
     def _setup_instanced_geometry(self):
         vformat = GeomVertexFormat.get_v3t2()
@@ -72,7 +80,6 @@ class Graph:
         vertex = GeomVertexWriter(vdata, 'vertex')
         texcoord = GeomVertexWriter(vdata, 'texcoord')
         
-        # We define the quad on X and Z axes (vertical plane)
         vertex.addData3(-0.55, 0, -0.5)
         texcoord.addData2(0, 0)
         vertex.addData3(0.55, 0, -0.5)
@@ -92,10 +99,13 @@ class Graph:
         node.addGeom(geom)
         
         self.graph_node = NodePath(node)
-        self.graph_node.set_instance_count(self._max_segments)
+        self.graph_node.set_instance_count(self._num_segments)
         self.graph_node.reparentTo(self.parent)
         self.graph_node.setTransparency(TransparencyAttrib.MAlpha)
         self.graph_node.setBin('fixed', 10)
+        
+        # Position at the graph's position for rotation
+        self.graph_node.setPos(self.position.x, 0, self.position.y)
         
         self._setup_shader()
         self._update_shader_inputs()
@@ -103,43 +113,74 @@ class Graph:
     def _update_shader_inputs(self):
         self.graph_node.setShaderInput('min_val', self.min_val)
         self.graph_node.setShaderInput('max_val', self.max_val)
-        self.graph_node.setShaderInput('max_segments', float(self._max_segments))
-        self.graph_node.setShaderInput('graph_position', Vec3(self.position.x, 0, self.position.y))
+        self.graph_node.setShaderInput('num_segments', float(self._num_segments))
+        self.graph_node.setShaderInput('num_values', float(self.max_values))
+        self.graph_node.setShaderInput('graph_position', Vec3(0, 0, 0))  # Now relative to node position
         self.graph_node.setShaderInput('graph_size', Vec2(self.size.x, self.size.y))
         self.graph_node.setShaderInput('thickness', self.thickness * 0.001)
         self.graph_node.setShaderInput('line_color', self.line_color)
+        self.graph_node.setShaderInput('circular', 1.0 if self.circular else 0.0)
+        self.graph_node.setShaderInput('base_radius', self.base_radius)
 
     def _setup_shader(self):
         vertex_shader = '''
         #version 430
         in vec4 p3d_Vertex;
         uniform mat4 p3d_ModelViewProjectionMatrix;
-        uniform float data_count;
+        uniform float num_segments;
+        uniform float num_values;
+        uniform float min_val;
+        uniform float max_val;
         uniform vec3 graph_position;
         uniform vec2 graph_size;
         uniform float thickness;
         uniform vec4 line_color;
+        uniform float circular;
+        uniform float base_radius;
 
-        layout(std430, binding = 0) buffer segment_data { float segments[]; };
+        layout(std430, binding = 0) buffer value_data { float values[]; };
         out vec4 frag_line_color;
         out vec2 local_pos;
 
+        #define PI 3.14159265359
+
         void main() {
-            int instance_id = gl_InstanceID;
-            if (float(instance_id) >= data_count - 1.0) {
-                gl_Position = vec4(2.0); return;
+            int seg_id = gl_InstanceID;
+            if (float(seg_id) >= num_segments) {
+                gl_Position = vec4(2.0); 
+                return;
             }
 
-            int base_idx = instance_id * 4;
-            float x1 = segments[base_idx];
-            float z1 = segments[base_idx + 1];
-            float x2 = segments[base_idx + 2];
-            float z2 = segments[base_idx + 3];
+            float val1 = values[seg_id];
+            float val2 = values[seg_id + 1];
+            
+            float val_range = max(max_val - min_val, 0.0001);
+            float norm_val1 = clamp((val1 - min_val) / val_range, 0.0, 1.0);
+            float norm_val2 = clamp((val2 - min_val) / val_range, 0.0, 1.0);
 
-            vec2 start = vec2(graph_position.x + (x1 - 0.5) * graph_size.x,
-                              graph_position.z + (z1 - 0.5) * graph_size.y);
-            vec2 end = vec2(graph_position.x + (x2 - 0.5) * graph_size.x,
-                            graph_position.z + (z2 - 0.5) * graph_size.y);
+            vec2 start, end;
+            
+            if (circular > 0.5) {
+                float angle1 = 2.0 * PI * float(seg_id) / num_segments;
+                float angle2 = 2.0 * PI * float(seg_id + 1) / num_segments;
+                
+                float radius1 = base_radius + norm_val1 * base_radius * 1.5;
+                float radius2 = base_radius + norm_val2 * base_radius * 1.5;
+                
+                start = vec2(cos(angle1) * radius1, sin(angle1) * radius1);
+                end = vec2(cos(angle2) * radius2, sin(angle2) * radius2);
+                
+                start += vec2(graph_position.x, graph_position.z);
+                end += vec2(graph_position.x, graph_position.z);
+            } else {
+                float x1 = float(seg_id) / num_segments;
+                float x2 = float(seg_id + 1) / num_segments;
+                
+                start = vec2(graph_position.x + (x1 - 0.5) * graph_size.x,
+                            graph_position.z + (norm_val1 - 0.5) * graph_size.y);
+                end = vec2(graph_position.x + (x2 - 0.5) * graph_size.x,
+                          graph_position.z + (norm_val2 - 0.5) * graph_size.y);
+            }
 
             vec2 dir = normalize(end - start);
             vec2 normal = vec2(-dir.y, dir.x);
@@ -168,95 +209,34 @@ class Graph:
         '''
         self.graph_node.setShader(Shader.make(Shader.SL_GLSL, vertex_shader, fragment_shader))
 
-    def put(self, value: float):
-        self._data[self._data_index] = value
-        self._data_index = (self._data_index + 1) % self.max_values
-        if self._data_count < self.max_values:
-            self._data_count += 1
-        self._update_segment_data()
+    def set_values(self, values: np.ndarray):
+        """Set all graph values at once."""
+        if len(values) != self.max_values:
+            raise ValueError(f"Expected {self.max_values} values, got {len(values)}")
+        
+        self._values[:] = values
+        
+        self.ssbo = ShaderBuffer('value_data', self._values, GeomEnums.UH_dynamic)
+        self.graph_node.setShaderInput('value_data', self.ssbo)
+    
+    def set_rotation(self, angle_degrees: float):
+        """Set the rotation angle around camera axis (roll)"""
+        self.graph_node.setR(angle_degrees)
+    
+    def set_position_offset(self, x_offset: float, z_offset: float):
+        """Set position offset for wave effect"""
+        self.graph_node.setPos(self.position.x + x_offset, 0, self.position.y + z_offset)
+    
+    def set_color(self, color: Vec4):
+        """Update the line color"""
+        self.line_color = color
+        self.graph_node.setShaderInput('line_color', self.line_color)
+    
+    def set_base_radius(self, radius: float):
+        """Update the base radius"""
+        self.base_radius = radius
+        self.graph_node.setShaderInput('base_radius', self.base_radius)
     
     def clear(self):
-        self._data[:] = 0
-        self._data_index = 0
-        self._data_count = 2
-        self._update_segment_data()
-
-    def _update_segment_data(self):
-        if self._data_count < 2: return
-        num_segments = self._data_count - 1
-        
-        # Calculate Y range for auto-scaling
-        # Note: If you want static scaling, use self.min_val/max_val instead
-        current_min = np.min(self._data[:self._data_count])
-        current_max = np.max(self._data[:self._data_count])
-        v_range = max(current_max - current_min, 0.0001)
-
-        points = []
-        for i in range(self._data_count):
-            idx = (self._data_index - self._data_count + i) % self.max_values
-            x = i / (self._data_count - 1)
-            # Map value to 0-1 range based on current min/max
-            z = (self._data[idx] - current_min) / v_range
-            points.append((x, z))
-        
-        for i in range(num_segments):
-            base = i * 4
-            self._segment_data[base:base+4] = [points[i][0], points[i][1], points[i+1][0], points[i+1][1]]
-        
-        self.ssbo = ShaderBuffer('segment_data', self._segment_data, GeomEnums.UH_dynamic)
-        self.graph_node.setShaderInput('segment_data', self.ssbo)
-        self.graph_node.setShaderInput('data_count', float(self._data_count))
-
-### Main Application
-if __name__ == "__main__":
-    class GraphDemo(ShowBase):
-        def __init__(self):
-            ShowBase.__init__(self)
-            self.disableMouse()
-            
-            # 1. Create Graph
-            self.graph1 = Graph(
-                parent=self.aspect2d,
-                max_values=1000,
-                line_color=Vec4(1, 0.3, 0.3, 1.0),
-                bg_color=Vec4(0.1, 0.1, 0.1, 0.8),
-                position=Vec2(0, 0),
-                size=Vec2(1.6, 0.8), # Fits most 16:9 screens well
-                thickness=3.0
-            )
-            
-            # 2. Setup Axes (Fixed Rotation)
-            self.axes_node = self.aspect2d.attachNewNode("axes")
-            self.draw_axes()
-
-        def draw_axes(self):
-            self.axes_node.getChildren().detach() # Clear old axes
-            ls = LineSegs()
-            ls.setThickness(2)
-            
-            # Get graph bounds
-            w, h = self.graph1.size.x * 0.5, self.graph1.size.y * 0.5
-            px, pz = self.graph1.position.x, self.graph1.position.y
-            
-            # X-Axis (Bottom)
-            ls.setColor(0, 1, 0, 1)
-            ls.moveTo(px - w, 0, pz - h)
-            ls.drawTo(px + w, 0, pz - h)
-            
-            # Y-Axis (Left)
-            ls.setColor(0, 0.5, 1, 1)
-            ls.moveTo(px - w, 0, pz - h)
-            ls.drawTo(px - w, 0, pz + h)
-            
-            self.axes_node.attachNewNode(ls.create())
-
-        def run_logic(self, task):
-            t = task.time
-            # Generate a wave that changes amplitude to test scaling
-            val = (math.sin(t * 2) * 50) + (math.cos(t * 0.5) * 20)
-            self.graph1.put(val)
-            return task.cont
-
-    app = GraphDemo()
-    app.taskMgr.add(app.run_logic, "run_logic")
-    app.run()
+        """Clear the graph to all zeros."""
+        self.set_values(np.zeros(self.max_values, dtype=np.float32))
