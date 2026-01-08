@@ -1,0 +1,1 @@
+from .shader_toy import main as shader_toy_mainloop
